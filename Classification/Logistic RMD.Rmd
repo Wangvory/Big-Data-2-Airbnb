@@ -1,0 +1,215 @@
+---
+title: "Logistic"
+author: "John Zhou"
+date: "10/28/2019"
+output: html_document
+---
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r,warning=FALSE, message=FALSE}
+library(Metrics)
+library(caret)
+library(lmtest)
+library(sandwich)
+library(mgcv)
+library(robustbase)
+library(MASS)
+library(car)
+library(plyr)
+library(pastecs)
+library(Hmisc)
+library(psych)
+library(stringr)
+library(varhandle)
+library(tidyverse)
+library(forecast)
+library(leaps)
+library(forecast)
+library(readxl)
+library(GGally)
+library(modelr)
+library(dummies)
+library(viridis)
+library(ggpubr)
+```
+
+```{r,warning=FALSE, message=FALSE}
+Data1<- read.csv("/Users/zhoujiawang/Desktop/Brandeis Life/BigData2/ABB Data Project/Regression/clean_V3.csv", header=TRUE)
+Data1$if_review_score96<- ifelse(Data1$review_scores_rating>=96,"t","f")
+Data1<-na.omit(Data1)
+attach(Data1)
+summary(Data1$if_review_score96)
+```
+
+Data Visualize and variable selection
+```{r,warning=FALSE, message=FALSE}
+Data1$if_review_score96<-as.factor(Data1$if_review_score96)
+#delete a special property type Casa(cuba) seems like a outlier
+summary(Data1$property_type)
+ 
+mu <- Data1 %>% 
+  group_by(if_review_score96) %>%
+  summarise(grp.mean = mean(average_price))
+
+ggplot(Data1,aes(x=property_type))+geom_bar(aes(fill=if_review_score96))
+ggplot(Data1,aes(x=average_price))+geom_density(aes(fill=if_review_score96,alpha=0.2))+
+  geom_vline(aes(xintercept = grp.mean, color = if_review_score96), data = mu, linetype = "dashed")
+```
+Split Tarin and Test:
+We deleted the row that contained the property type of Aparthotel,Cottage,Farm Stay,Houseboat, Barn, Resort, Casa particular (Cuba) since it shows less than 5 timesin the validation set.
+```{r}
+# just 1 observation for Barn, Resort, and Casa particular (Cuba) property type, all in validation data, unable to predict
+Data1<-Data1[!Data1$property_type %in% c("Casa particular (Cuba)","Aparthotel","Barn","Cottage","Resort","Farm Stay","Houseboat"),]
+selected.var = c(3,5,8,9,11:15,17:20,25,34,35,37,43,44)
+Data1<-subset(Data1,select = selected.var)
+summary(Data1)
+set.seed(7)
+Train <- sample(c(1:nrow(Data1)), round(nrow(Data1)*0.6,0))
+Logtrain <- Data1[ Train, ]
+Logtest <- Data1[ -Train, ]
+```
+
+First, we run the model and detect unesscary variables.
+```{r,warning=FALSE, message=FALSE}
+logfit1 <- glm(if_review_score96~., data=Logtrain, family='binomial')
+# summarize the fit
+summary(logfit1)
+data.frame(summary(logfit1)$coefficients, odds = exp(coef(logfit1))) 
+# make predictions
+probabilities1 <- predict(logfit1, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities1 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+```
+Try to plot correlation for continous variables to better estimate which variables need to be delteted.Here we can see the strong correlation between bedroom and accommondates, accommondates and average_price, security deposit/ cleaning fee and average_price. Luckliy all these variables are not significant so we can drop them in the model after.
+```{r}
+varImp(logfit1)
+plotdf<-subset(Data1,select = c(1,2,7:9,11:14,18))
+corrplot.mixed(cor(plotdf),tl.pos = "lt", diag = "u")
+```
+Delete those variables with P value larger than 0.05, which are not essential for our model and can create noise somehow. We can see that in our model, categorical variables like Property_type and neighborhood not all categories are significant (P<0.05), however to maintain the dataset completion, we would love to keep these partically-important variables.
+As a result, we have deleted room_type, Number of bathrooms, Number of bedrooms, security_deposit, cleanning fee. And we can see from the accuracy result, removing all these variables our model maintain the accuracy at around 0.67(actually slightly increased from 0.6672 to 0.6721).
+Average price have P value=0.06, we would love to save it in the model for further polynomial reference.
+```{r}
+logfit2 <- glm(if_review_score96~host_response_rate.percentage+host_total_listings_count+as.factor(host_identity_verified)+as.factor(neighbourhood_cleansed)+as.factor(property_type)+Number.of.amenities+number_of_reviews+as.factor(instant_bookable)+as.factor(cancellation_policy)+as.factor(require_guest_phone_verification)+average_price, data=Logtrain, family='binomial')
+vif(logfit2)
+summary(logfit2)
+probabilities2 <- predict(logfit2, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities2 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+```
+Remove Outlier:
+Residuals vs. Fitted Values and Normal Probability Plot are used to remove outliers while identifying the leverage point. Both the Residuals vs Fitted and the Scale-Location plots look like there are problems with the model, but we thought that these plots are intended for linear models, are simply often misleading when used with a logistic regression model. 13 outliers are removed, however the model accuracy decreases from 0.6721 to 0.6717.  
+
+```{r}
+par(mfrow=c(2,2))
+summary(logfit2) 
+plot(logfit2)
+plot(logfit2, which = 4, id.n = 10)
+```
+
+```{r, warning=FALSE, message=FALSE}
+# logfit2 remove c(12)
+Logtrain2 <- Logtrain[!(rownames(Logtrain) %in% c(1242,1479,1555,102,2218,509,2133,3353,5741,3628)),]
+logfit2.2 <- glm(if_review_score96~host_response_rate.percentage+host_total_listings_count+as.factor(host_identity_verified)+as.factor(neighbourhood_cleansed)+as.factor(property_type)+Number.of.amenities+number_of_reviews+as.factor(instant_bookable)+as.factor(cancellation_policy)+as.factor(require_guest_phone_verification)+average_price, data=Logtrain2, family='binomial')
+summary(logfit2.2) 
+probabilities2.2 <- predict(logfit2.2, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities2.2 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+plot(logfit2.2, which = 4, id.n = 10)
+```
+
+```{r, warning=FALSE, message=FALSE}
+# logfit2 remove c(12)
+Logtrain3 <- Logtrain2[!(rownames(Logtrain2) %in% c(5976)),]
+logfit2.3 <- glm(if_review_score96~host_response_rate.percentage+host_total_listings_count+as.factor(host_identity_verified)+as.factor(neighbourhood_cleansed)+as.factor(property_type)+Number.of.amenities+number_of_reviews+as.factor(instant_bookable)+as.factor(cancellation_policy)+as.factor(require_guest_phone_verification)+average_price, data=Logtrain3, family='binomial')
+summary(logfit2.3) 
+probabilities2.3 <- predict(logfit2.3, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities2.3 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+plot(logfit2.3, which = 4, id.n = 5)
+```
+```{r, warning=FALSE, message=FALSE}
+Logtrain4 <- Logtrain3[!(rownames(Logtrain3) %in% c(4479,4692,965)),]
+logfit2.4 <- glm(if_review_score96~host_response_rate.percentage+host_total_listings_count+as.factor(host_identity_verified)+as.factor(neighbourhood_cleansed)+as.factor(property_type)+accommodates+Number.of.amenities+number_of_reviews+as.factor(instant_bookable)+as.factor(cancellation_policy)+as.factor(require_guest_phone_verification)+average_price, data=Logtrain4, family='binomial')
+summary(logfit2.4) 
+probabilities2.4 <- predict(logfit2.4, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities2.4 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+plot(logfit2.4, which = 4, id.n = 10)
+```
+
+Tried several other models with Permutation with polynomial level (0.5,1,2,3), Trail and error many many many times finally get the best accuracy.
+Suprisingly we find out that after deleted the outliers, the accommondates variable becomes siginificant again !Finally we have sqrt of Number of list a single host have,Number of accommodates a list can fit, Number of secutiry fee and Number of reviews.
+
+```{r}
+logfit3 <- glm(if_review_score96~host_response_rate.percentage+host_total_listings_count+sqrt(host_total_listings_count)+as.factor(host_identity_verified)+as.factor(neighbourhood_cleansed)+as.factor(property_type)+accommodates+sqrt(accommodates)+Number.of.amenities+number_of_reviews+sqrt(number_of_reviews)+as.factor(instant_bookable)+as.factor(cancellation_policy)+as.factor(require_guest_phone_verification)+average_price, data=Logtrain4, family='binomial')
+summary(logfit3)
+probabilities3 <- predict(logfit3, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities3 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+```
+
+```{r}
+# make predictions
+library(ROCR)
+# Compute AUC for predicting Class with the variable CreditHistory.Critical
+perf <- performance(prediction(probabilities3,Logtest$if_review_score96), measure = "tpr", x.measure = "fpr")
+plot(perf)
+auc<-performance(prediction(probabilities3,Logtest$if_review_score96), measure = "auc")@y.values[[1]]
+auc
+```
+Compare with the original logistic model,the accuracy increased from 0.6717 to 0.7053.
+The Sensitivity and Specificity both increased with some sqrt variables. Sensitivity =  The proportion of observed positives that were predicted to be positive. In other words, of all the review score that were truly lower than 96, what percentage did we find?  Specificity = The proportion of observed negatives that were predicted to be negatives. In other words, of all the higher than 96's listing, what percentage did we predict to be so?
+The increase in Sensitivity and  Specificity means our model becomes better on interpreting the value, our improved model with polynomal helps up better predict listing with both score lower and higher than 96.
+```{r}
+# summarize the fit
+summary(logfit3)
+data.frame(summary(logfit3)$coefficients, odds = exp(coef(logfit3))) 
+```
+Model interpertation:
+The coefficient of logit model variables expressed the change in odds-ratio
+odds-ratio = ln(Pr|Y=1) - ln(Pr|Y=0)
+We should interprete Odds ratio in this way,in our model:
+Continouse Variables:
+The coefficient of host_response_rate.percentage is 0.02 ,which means a Airbnb host with 1% more response can increase the odds-ratio by exp(0.02)=1.02,the probility of getting review score> 96 increased by 0.02 persent.
+The coefficient of host listing  is 0.004 ,which means a Airbnb host owns 1 more listing can increase the odds-ratio by exp(0.2)=1.0044,the probility of getting review score> 96 increased by 0.004 present.However the odds ratio of sqrt(host_total_listings_count) is smaller than 1, which means 1 increase on sqrt(listing) ,the probility of getting review score> 96 decreased by 0.18 present.
+The coefficient of accommodates is 0.20 ,which means a Airbnb with 1 more accommodates can increase the odds-ratio by exp(0.2)=1.23,which mean the probility of getting score higher than 96 increased by 0.23 persent. However the odds ratio of sqrt(accommodates) is smaller than 1, which means 1 increase on sqrt(accommodates) ,the probility of getting review score> 96 decreased by 0.69 present.
+The coefficient of Number of Amenities is 0.02 ,which means a Airbnb with 1 more amenities can increase the odds-ratio by exp(0.02)=1.02,the probility of getting review score> 96 increased by 0.02 persent.
+The coefficient of Number of Review is Negative the odds-ratio becomes exp(-0.007)=0.99,which means a Airbnb with 1 more review ,the probility of getting review score> 96 decreased by 0.01 persent. But we can see that sqrt(number_of_reviews) have odds>1, which means 1 increase on sqrt(number_of_review) ,the probility of getting review score> 96 increased by 0.17 present.
+The odds ratio of average price is 1.002 = exp(0.002) ,which means a Airbnb with $1 higher in price can increase the probility of getting review score> 96 by 0.002 persent.
+
+Categorical Variables:
+We have "host not identified"" as our host identification's baseline category.The coefficient of True is 0.16 ,which means a identified host can increase odds to 1.18, that is to say increase probility of getting score>96 by 0.18 persent compare with not identified hosts.
+We have Allston area as our neighborhoond's baseline category.The coefficient of BackBay Neighborhood is -0.20 ,which means a BackBay's Airbnb can decrease probility of getting score>96 by 1-exp(0.02)=1-odds Backbay= 0.19 persent compare with Allston Area's probility. From the logic we ca in terprepet Bay Village have 0.1% lower persentage than Allston, Beacon Hill have 0.27% higher persentage than Allston...
+We have Allston area as our neighborhoond's baseline category.The coefficient of accommodates is -0.20 ,which means a BackBay's Airbnb can decrease probility of getting score>96 by 1-exp(0.02)=1-odds Backbay= 0.19 persent compare with Allston Area's probility. From the logic we can interprepet Bay Village have 0.1 lower persentage than Allston, Beacon Hill have 0.27 higher persentage than Allston, Fenway have 0.31 higher persentage than Allston... 
+We have Apartment as our Property Type's baseline category.The coefficient of Bed and Breakfast is 0.93 ,which means a Bed and Breakfast Airbnb can increase probility of getting score>96 by exp(0.93)-1/odds-1 = 1.61 persent compare with Apartment. From the logic we can interprepet Boat(Sounds really interesting) have 7081012 higher persentage than Apartment, House have 0.007 higher persentage than Apartment, Hotel have 0.99 lower persentage than Apartment... 
+We have "Not instant bookable" as our book-ability's baseline category.The coefficient of True is -0.4 ,which means a instant bookable Airbnb can decrease odds to 0.66, that is to say decrease probility of getting score>96 by 0.34 persent compare with Not instant bookable.
+We have flexiable cancel as our cancellation policy's baseline category.The coefficient of strict is 1.05 ,which means Airbnb that are hard to cancel can increase probility of getting score>96 by exp(1.05)-1/odds-1 = 1.87 persent compare with flexiable cancel. From the logic we can interprepet super strict that can't be canceled iwth 30 day have 0.99999 lower persentage than Flexiable, Moderate Cancelled Airbnb have 0.04 higher persentage than flexiable... 
+
+Conclusion:
+1, Logistic Model is not that accuracy to predict high score with Specificity smaller than Sensitivity.
+2, From above we can get some wired but interesting insight, host should repond less delligent/Provide not too many Amenities/not instant bookable/set strict cancel policy to increase their review score. In our view, this might have an internal cause or origin "endogenous" it is not host don't response get higher score but those low score host want to change their business so they will response more frequently, which finally makes the "Response-Low Score" relationship.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,438 @@
+---
+title: "Project Assignment 3: Classification"
+author: "BD5"
+date: "10/31/2019"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message = FALSE, warnings = FALSE}
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(dummies)
+library(class)
+library(corrplot)
+library(ROCR)
+library(tidyverse)
+library(car)
+
+setwd("~/Documents/2019 Fall/BD2/HW3")
+Data1<- read.csv('clean_V3.csv', header=TRUE)
+Data1$if_review_score96<- ifelse(Data1$review_scores_rating>=96,"t","f")
+Data1$sqrt.host_total_listings_count <- sqrt(Data1$host_total_listings_count)
+Data1$sqrt.accommodates <- sqrt(Data1$accommodates)
+Data1$sqrt.security_deposit <- sqrt(Data1$security_deposit)
+Data1$sqrt.number_of_reviews <- sqrt(Data1$number_of_reviews)
+Data1<-na.omit(Data1)
+attach(Data1)
+```
+
+### Logistics regression
+
+```{r}
+# initialize data for logistics regression
+set.seed(1)  # set seed for reproducing the partition
+train.index <- sample(c(1:nrow(Data1)), round(nrow(Data1)*0.6,0))
+selected.var = c(3,5,8,9,11:15,17:20,34,35,37,43,44:48)
+train.t <- Data1[train.index,selected.var]
+valid.t <- Data1[-train.index,selected.var]
+```
+
+#### Data Visualize and variable selection
+
+```{r,warning=FALSE, message=FALSE}
+Data1$if_review_score96<-as.factor(Data1$if_review_score96)
+#delete a special property type Casa(cuba) seems like a outlier
+summary(Data1$property_type)
+ 
+mu <- Data1 %>% 
+  group_by(if_review_score96) %>%
+  summarise(grp.mean = mean(average_price))
+
+ggplot(Data1,aes(x=property_type))+geom_bar(aes(fill=if_review_score96))
+ggplot(Data1,aes(x=average_price))+geom_density(aes(fill=if_review_score96,alpha=0.2))+
+  geom_vline(aes(xintercept = grp.mean, color = if_review_score96), data = mu, linetype = "dashed")
+```
+
+#### Split Tarin and Test
+
+We deleted the row that contained the property type of Aparthotel, Cottage, Farm Stay, Houseboat, Barn, Resort, Casa particular (Cuba) since it shows less than 5 times in the validation set.
+
+```{r}
+# just 1 observation for Barn, Resort, and Casa particular (Cuba) property type, all in validation data, unable to predict
+Data1<-Data1[!Data1$property_type %in% c("Casa particular (Cuba)","Aparthotel","Barn","Cottage","Resort","Farm Stay","Houseboat"),]
+selected.var = c(3,5,8,9,11:15,17:20,25,34,35,37,43,44)
+Data2<-subset(Data1,select = selected.var)
+summary(Data2)
+set.seed(7)
+Train <- sample(c(1:nrow(Data2)), round(nrow(Data2)*0.6,0))
+Logtrain <- Data2[ Train, ]
+Logtest <- Data2[ -Train, ]
+```
+
+First, we run the model and detect unesscary variables.
+
+```{r,warning=FALSE, message=FALSE}
+logfit1 <- glm(if_review_score96~., data=Logtrain, family='binomial')
+# summarize the fit
+data.frame(summary(logfit1)$coefficients, odds = exp(coef(logfit1))) 
+# make predictions
+probabilities1 <- predict(logfit1, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities1 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+```
+
+Try to plot correlation for continuous variables to better estimate which variables need to be deleted.Here we can see the strong correlation between the bedroom and accommodates, accommodates and average_price, security deposit/ cleaning fee, and average_price. Luckily all these variables are not significant so we can drop them in the model after while keeping accommodates to make sure this variable effect still exsist.
+
+```{r}
+varImp(logfit1)
+plotdf<-subset(Data2,select = c(1,2,7:9,11:14,18))
+corrplot.mixed(cor(plotdf),tl.pos = "lt", diag = "u")
+```
+
+Delete those variables with P value larger than 0.05, which are not essential for our model and can create noise somehow. We can see that in our model, categorical variables like Property_type and neighborhood not all categories are significant (P<0.05), however to maintain the dataset completion, we would love to keep these partically-important variables.
+
+As a result, we have deleted room_type, Number of bathrooms, Number of bedrooms, security_deposit, cleanning fee. And we can see from the accuracy result, removing all these variables our model maintain the accuracy at around 0.67(actually slightly increased from 0.6672 to 0.6721).
+Since we have mentioned the accommodates have many colinear with other variables, we would love to keep eyes on it in the latter model for further polynomial reference.
+
+```{r}
+logfit2 <- glm(if_review_score96~host_response_rate.percentage+host_total_listings_count+as.factor(host_identity_verified)+as.factor(neighbourhood_cleansed)+as.factor(property_type)+Number.of.amenities+number_of_reviews+as.factor(instant_bookable)+as.factor(cancellation_policy)+as.factor(require_guest_phone_verification)+average_price, data=Logtrain, family='binomial')
+vif(logfit2)
+probabilities2 <- predict(logfit2, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities2 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+```
+
+#### Remove Outlier
+
+Residuals vs. Fitted Values and Normal Probability Plot are used to remove outliers while identifying the leverage point. Both the Residuals vs Fitted and the Scale-Location plots look like there are problems with the model, but we thought that these plots are intended for linear models, are simply often misleading when used with a logistic regression model. 13 outliers are removed, however, the model accuracy decreases from 0.6721 to 0.6717.  
+
+```{r}
+par(mfrow=c(2,2))
+summary(logfit2) 
+plot(logfit2)
+plot(logfit2, which = 4, id.n = 10)
+```
+
+```{r, warning=FALSE, message=FALSE}
+# logfit2 remove c(12)
+Logtrain2 <- Logtrain[!(rownames(Logtrain) %in% c(1242,1479,1555,102,2218,509,2133,3353,5741,3628)),]
+logfit2.2 <- glm(if_review_score96~host_response_rate.percentage+host_total_listings_count+as.factor(host_identity_verified)+as.factor(neighbourhood_cleansed)+as.factor(property_type)+Number.of.amenities+number_of_reviews+as.factor(instant_bookable)+as.factor(cancellation_policy)+as.factor(require_guest_phone_verification)+average_price, data=Logtrain2, family='binomial')
+probabilities2.2 <- predict(logfit2.2, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities2.2 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+plot(logfit2.2, which = 4, id.n = 10)
+```
+
+```{r, warning=FALSE, message=FALSE}
+# logfit2 remove c(12)
+Logtrain3 <- Logtrain2[!(rownames(Logtrain2) %in% c(5976)),]
+logfit2.3 <- glm(if_review_score96~host_response_rate.percentage+host_total_listings_count+as.factor(host_identity_verified)+as.factor(neighbourhood_cleansed)+as.factor(property_type)+Number.of.amenities+number_of_reviews+as.factor(instant_bookable)+as.factor(cancellation_policy)+as.factor(require_guest_phone_verification)+average_price, data=Logtrain3, family='binomial')
+probabilities2.3 <- predict(logfit2.3, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities2.3 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+plot(logfit2.3, which = 4, id.n = 5)
+```
+```{r, warning=FALSE, message=FALSE}
+Logtrain4 <- Logtrain3[!(rownames(Logtrain3) %in% c(4479,4692,965)),]
+logfit2.4 <- glm(if_review_score96~host_response_rate.percentage+host_total_listings_count+as.factor(host_identity_verified)+as.factor(neighbourhood_cleansed)+as.factor(property_type)+accommodates+Number.of.amenities+number_of_reviews+as.factor(instant_bookable)+as.factor(cancellation_policy)+as.factor(require_guest_phone_verification)+average_price, data=Logtrain4, family='binomial')
+probabilities2.4 <- predict(logfit2.4, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities2.4 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+plot(logfit2.4, which = 4, id.n = 10)
+```
+
+Tried several other models with Permutation with polynomial level (0.5,1,2,3), Trail and error many many many times finally get the best accuracy.
+Surprisingly we find out that after deleting the outliers, the accommodates variable becomes significant again!Finally, we have sqrt of Number of lists a single host has, Number of accommodates a list can fit, Number of security fee and Number of reviews.
+
+```{r}
+logfit3 <- glm(if_review_score96~host_response_rate.percentage+host_total_listings_count+sqrt(host_total_listings_count)+as.factor(host_identity_verified)+as.factor(neighbourhood_cleansed)+as.factor(property_type)+accommodates+sqrt(accommodates)+Number.of.amenities+number_of_reviews+sqrt(number_of_reviews)+as.factor(instant_bookable)+as.factor(cancellation_policy)+as.factor(require_guest_phone_verification)+average_price, data=Logtrain4, family='binomial')
+probabilities3 <- predict(logfit3, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities3 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+```
+
+```{r}
+# make predictions
+library(ROCR)
+# Compute AUC for predicting Class with the variable CreditHistory.Critical
+perf <- performance(prediction(probabilities3,Logtest$if_review_score96), measure = "tpr", x.measure = "fpr")
+plot(perf)
+auc<-performance(prediction(probabilities3,Logtest$if_review_score96), measure = "auc")@y.values[[1]]
+auc
+```
+
+Compare with the original logistic model logfit1, the accuracy increased from 0.6717 to 0.7053.
+
+The Sensitivity and Specificity both increased with some sqrt variables. Sensitivity =  The proportion of observed positives that were predicted to be positive. In other words, of all the review scores that were truly lower than 96, what percentage did we find?  Specificity = The proportion of observed negatives that were predicted to be negatives. In other words, of all the higher than 96's listing, what percentage did we predict to be so?
+
+The increase in Sensitivity and  Specificity means our model becomes better on interpreting the value, our improved model with polynomial helps up better predict listing with both scores lower and higher than 96.
+
+```{r}
+# summarize the fit
+data.frame(summary(logfit3)$coefficients, odds = exp(coef(logfit3))) 
+```
+
+#### Model interpertation
+
+The coefficient of logit model variables expressed the change in odds-ratio
+
+odds-ratio = ln(Pr|Y=1) - ln(Pr|Y=0)
+
+We should interprete Odds ratio in this way,in our model:
+
+##### Continues Variables:
+
+The coefficient of host_response_rate.percentage is 0.02 ,which means a Airbnb host with 1% more response can increase the odds-ratio by exp(0.02)=1.02,the probility of getting review score> 96 increased by 0.02 persent.
+
+The coefficient of host listing is 0.004, which means an Airbnb host owns 1 more listing can increase the odds-ratio by exp(0.2)=1.0044, the probability of getting review score> 96 increased by 0.004 present.However the odds ratio of sqrt(host_total_listings_count) is smaller than 1, which means 1 increase on sqrt(listing) ,the probability of getting review score> 96 decreased by 0.18 present.
+
+The coefficient of accommodates is 0.20, which means an Airbnb with 1 more accommodates can increase the odds-ratio by exp(0.2)=1.23, which means the probability of getting a score higher than 96 increased by 0.23 percent. However the odds ratio of sqrt(accommodates) is smaller than 1, which means 1 increase on sqrt(accommodates), the probability of getting review score> 96 decreased by 0.69 present.
+
+The coefficient of the Number of Amenities is 0.02, which means an Airbnb with 1 more amenities can increase the odds-ratio by exp(0.02)=1.02, the probability of getting review score> 96 increased by 0.02 percent.
+
+The coefficient of Number of Reviews is Negative the odds-ratio becomes exp(-0.007)=0.99, which means an Airbnb with 1 more review, the probability of getting review score> 96 decreased by 0.01 percent. But we can see that sqrt(number_of_reviews) have odds>1, which means 1 increase on sqrt(number_of_review) ,the probability of getting review score> 96 increased by 0.17 present.
+
+The odds ratio of the average price is 1.002 = exp(0.002), which means an Airbnb with $1 higher in price can increase the probability of getting a review score> 96 by 0.002 percent.
+
+##### Categorical Variables:
+
+We have "host not identified" as our host identification's baseline category. The coefficient of True is 0.16, which means an identified host can increase odds to 1.18, that is to say, increase the probability of getting score>96 by 0.18 percent compared with not identified hosts.
+
+We have the Allston area as our neighborhood's baseline category. The coefficient of BackBay Neighborhood is -0.20, which means a BackBay's Airbnb can decrease the probability of getting score>96 by 1-exp(0.02)=1-odds Backbay= 0.19 percent compare with Allston Area's probability. From the logic we can interpret Bay Village to have  0.1% lower percentage than Allston, Beacon Hill has 0.27% higher percentage than Allston...
+
+We have the Allston area as our neighborhood's baseline category. The coefficient of accommodates is -0.20, which means a BackBay's Airbnb can decrease the probability of getting score>96 by 1-exp(0.02)=1-odds Backbay= 0.19 percent compare with Allston Area's probability. From the logic we can interpret Bay Village to have 0.1 lower percentage than Allston, Beacon Hill has 0.27 higher percentage than Allston, Fenway has 0.31 higher percentage than Allston... 
+
+We have an Apartment as our Property Type's baseline category. The coefficient of Bed and Breakfast is 0.93, which means a Bed and Breakfast Airbnb can increase the probability of getting score>96 by exp(0.93)-1/odds-1 = 1.61 percent compare with Apartment. From the logic, we can interpret Boat(Sounds interesting) have 7081012 higher percentage than Apartment, House have 0.007 higher percentage than Apartment, Hotel has 0.99 lower percentage than Apartment... 
+
+We have "Not instant bookable" as our "book-ability" baseline category. The coefficient of True is -0.4, which means an instant bookable Airbnb can decrease odds to 0.66, that is to say, decrease the probability of getting score>96 by 0.34 percent compared with Not instant bookable.
+
+We have flexible cancel as our cancellation policy's baseline category. The coefficient of strict is 1.05, which means Airbnb that are hard to cancel increase probability of getting score>96 by exp(1.05)-1/odds-1 = 1.87 percent compare with flexible cancel. From the logic we can interpret super strict that can't be canceled with 30 days have 0.99999 lower percentage than Flexible, Moderate Cancelled Airbnb have 0.04 higher percentage than flexible... 
+
+#### Conclusion
+
+1, Logistic Model is not that accuracy to predict high score with Specificity smaller than Sensitivity.
+
+2, From above we can get some wired but interesting insight, the host should respond less diligent/Provide not too many Amenities/not instant bookable/set strict cancellation policy to increase their review score. In our view, this might have an internal cause or origin "endogenous" it is not that hosts don't response get a higher score but those low score hosts want to change their business so they will respond more frequently, which finally makes the "Response-Low Score" relationship.
+
+
+### KNN
+
+#### Preprocess the explanatory variables
+
+Before throwing the data to the model, we normalize the numeric variables and turn the categorical to dummy variables.
+
+```{r}
+# initialize data for knn
+selected.var = c(3,5,8,9,11:15,17:20,25,34,35,37,43,44)
+data3 = Data1[,selected.var]
+# view(data3)
+
+##normalize numeric variables
+numeric.ind = unlist(lapply(data3,is.numeric))
+preprocessParams <- preProcess(data3[,numeric.ind], method=c("range"))
+# summarize transform parameters
+print(preprocessParams)
+# transform the dataset using the parameters
+numeric.nor <- predict(preprocessParams, data3[,numeric.ind])
+# summarize the transformed dataset
+summary(numeric.nor)
+data4 = cbind(numeric.nor,data3[,!numeric.ind])
+```
+
+```{r warnings = FALSE}
+#create dummy variables for all factor/categorical variables
+data4 = dummy.data.frame(data4,names=c('host_identity_verified','neighbourhood_cleansed','property_type', 'room_type','bed_type','instant_bookable','cancellation_policy','require_guest_phone_verification'),sep="_")
+```
+
+Then we generate the polynomial terms.
+
+```{r}
+#add interaction terms
+data4$sqrt.host_total_listings_count <- sqrt(data4$host_total_listings_count)
+data4$sqrt.accommodates <- sqrt(data4$accommodates)
+data4$sqrt.security_deposit <- sqrt(data4$security_deposit)
+data4$sqrt.number_of_reviews <- sqrt(data4$number_of_reviews)
+#number of review is column 100
+#get rid of number of reviews
+which(colnames(data4) == "number_of_reviews") # column 9
+data4 = data4[,-9]
+```
+
+Next, we partition the data to training and validation and design a for loop to optimize the k that has best accuracy.
+
+```{r}
+# prepare data for the next step
+data4<-na.omit(data4)
+set.seed(1)  # set seed for reproducing the partition
+train.index <- sample(c(1:nrow(data4)), round(nrow(data4)*0.6,0))
+train.t <- data4[train.index,]
+valid.t <- data4[-train.index,]
+
+c<-train.t$if_review_score96
+v<-valid.t$if_review_score96
+train.t = subset(train.t, select = -c(if_review_score96))
+valid.t= subset(valid.t, select = -c(if_review_score96))
+
+
+
+```
+
+```{r}
+range <- 1:round(0.05 * nrow(train.t))
+accs <- rep(0, length(range))
+ for (k in range){
+    pred<-knn(train=train.t, test= valid.t, cl=c, k=k)
+    conf=table(v, pred)
+    accs[k]<-sum(diag(conf)/sum(conf))
+ }
+plot(range, accs, xlab="k")
+which.max(accs)
+```
+
+From the optimization selection of best k with highest accuracy, we apply k=47 to the knn model with plonomial terms, which achieves an accuracy of 67.32%
+
+
+
+```{r}
+pred<-knn(train=train.t, test= valid.t, cl=c, k=47)
+conf=table(v, pred)
+print(conf)
+#conf
+accs<-sum(diag(conf)/sum(conf))
+print(accs)
+```
+
+Therefore, after running for the confusion matrix, false positive(FP): 652; 
+false negative(FN): 197; 
+True Positive(TP): 287; 
+True Negative(TN): 1334
+in this case: sensitivity： TP/(TP+FN)=287/(287+197)=59.3%
+Specificity: TN/(TN+FP)=1334/(1334+652)=67.2%
+Accuracy: (TP+TN)/(FN+TP+TN+FP)=(287+1334)/652+197+287+1334=1621/2470=65.63%
+In this case, by applying the model to the validation data set, we have proven that the sensitivity, speficifity metrics still are still godd and the model overall still have relatively high accuracy.
+#--------------------------------------------------------------------------------------------------
+
+linear regression to show variable importance. Here we hide the output to save space, but host_response_rate.percentage, host_total_listings_count, average_price, instant_bookable, sqrt.host_total_listings_count and sqrt.number_of_reviews are the significant variables at 1%.
+
+```{r}
+#knn.lm <- lm(if_review_score96 ~ ., data=data4[train.index,])
+#summary(knn.lm)
+```
+
+### Classification Tree
+
+#### Sample classification tree with max deepth of 5 
+
+```{r}
+# initialize data for classification tree
+set.seed(1)  # set seed for reproducing the partition
+train.index <- sample(c(1:nrow(Data1)), round(nrow(Data1)*0.6,0))
+selected.var = c(3,5,8,9,11:15,17:20,34,35,37,43,44:48)
+train.t <- Data1[train.index,selected.var]
+valid.t <- Data1[-train.index,selected.var]
+```
+
+We started the classification tree analysis based on the variables selected for the logistic regression. Besides, we used the same training and validation data so that we can better compare the models. Below is an example of a classification tree with a maximum deepth of 5. The model has 6 splits.
+
+```{r}
+# classification tree
+class.tree <- rpart(if_review_score96 ~ ., data = train.t, 
+                    control = rpart.control(maxdepth = 5), method = "class")
+prp(class.tree, type = 1, extra = 1, cex = 0.5, varlen = -20,
+    box.col=ifelse(class.tree$frame$var == "<leaf>", 'gray', 'white'))  
+```
+
+Visually the tree looks logical. For example in the first node, if a listing's square root of review number is below 0.5 (in reality, this means 0 review), then the model predicts the listing's score to be lower than 96. This makes sense because in reality Air&Bnb may give a listing with no review a base score, but the base score should not be high though we do not know the specific criteria. In fact, 672 of the 673 listings predicted to have < 96 score indeed have scores lower than 96. The issue here is whether we need to continue spliting - the predictions at deepth 4 and 5 seem not so powerful. 
+
+Here we show the confusion matrices and accuracies for this model. The in-sample accuracy is 0.7205 and out-of-sample accuracy is 0.715. This shows 1) the model's prediction power is strong and 2) over-fitting is not our concern yet. The in-sample and out-of-sample sensitivities are 0.8231 and 0.8067, while the in-sample and out-of-sample specificities are 0.5629 and 0.5655. Relatively more cases are tend to be categorized as positive because there are more positive cases in the dataset. However, both sensitivity and specificity are close to accuracy so overall this is a relatively good fit.
+
+```{r}
+# confusion matrix
+train.pred <- predict(class.tree,train.t,type = "class")
+confusionMatrix(train.pred, as.factor(train.t$if_review_score96)) # 0.7205
+valid.pred <- predict(class.tree,valid.t,type = "class")
+confusionMatrix(valid.pred, as.factor(valid.t$if_review_score96)) # 0.715
+```
+
+#### Best deepth for classification tree
+
+We simply ran a for loop to test what the best deepth for the tree is. It turned out that 7 is the optimal level - training and validation accuracies both achieve maximum. We also found that in R the rpart() formula can automatically stop at an optimal level. It will return a 7 deepth model even though we set a maxdeepth = 10 - this also confirms 7 is the desirable deepth.
+
+Note that though 7 is the optimal deepth, deepth 5-6 are also have great prediction powers.
+
+```{r}
+# back to the original model, try different maximum splits
+trial <- matrix(,nrow=10,ncol=3)
+for (i in 1:10) {
+  class.tree <- rpart(if_review_score96 ~ ., data = train.t, 
+                      control = rpart.control(maxdepth = i), method = "class")
+  train.pred <- predict(class.tree,train.t,type = "class")
+  train.acc <- round(confusionMatrix(train.pred, as.factor(train.t$if_review_score96))$overall['Accuracy'],digits=4)
+  valid.pred <- predict(class.tree,valid.t,type = "class")
+  valid.acc <- round(confusionMatrix(valid.pred, as.factor(valid.t$if_review_score96))$overall['Accuracy'],digits=4)
+  trial[i,] <- c(i,train.acc,valid.acc)
+}
+trial <- as.data.frame(trial) # to make it look nicer
+colnames(trial) <- c('split','trainAccuracy','validAccuracy')
+print(trial)
+```
+
+#### Best classification tree
+
+The best classification tree consists a maximum deepth of 7 and in total 9 nodes. The in-sample accuracy is 0.739 and the out-of-sample accuracy is 0.723. This again indicates the model has strong prediction power and we do not have an over-fitting issue. The in-sample sensitivity/specificity are 0.7865/0.6662 and out-of-sample sensitivity/specificity are 0.7675/0.6496. Relatively more negative cases are mistakenly categorized as positive, which is because there are more positive cases in the dataset. However, both sensitivity and specificity are close to accuracy so overall we believe this is a good fit.
+
+In the optimal model, lower-level nodes also predict better. For instance in the last node (average_price < 271), 197 of the 323 listings predicted to have < 96 scores indeed have scores lower than 96, and 39 of the 56 listings predicted to have >= 96 scores indeed have scores higher than or equal to 96. In a real-world dataset, this is actually a quite good prediction, let alone other nodes have even better performance. 
+
+```{r}
+# classification tree - best splits
+class.tree <- rpart(if_review_score96 ~ ., data = train.t, 
+                    control = rpart.control(maxdepth = 7), method = "class")
+prp(class.tree, type = 1, extra = 1, cex = 0.5, varlen = -20,
+    box.col=ifelse(class.tree$frame$var == "<leaf>", 'gray', 'white'))  
+
+train.pred <- predict(class.tree,train.t,type = "class")
+confusionMatrix(train.pred, as.factor(train.t$if_review_score96)) # 0.7391
+valid.pred <- predict(class.tree,valid.t,type = "class")
+confusionMatrix(valid.pred, as.factor(valid.t$if_review_score96)) # 0.7227
+```
+
+#### Pruning
+
+Based on our viusal check, we actually do not need to prune the tree, as it does not have many nodes anyways. However, we still tried the pruning codes, and the result confirms our intuition. What we had above is the optimal classification tree, so we will not display the outputs agian here.
+
+```{r}
+# pruning
+cv.ct <- rpart(if_review_score96 ~ ., data = train.t, method = "class", 
+               cp = 0.00001, minsplit = 5, xval = 5, control = rpart.control(maxdepth = 10))
+# prp(cv.ct) # will display a graph with 34 splits and take long time
+# printcp(cv.ct) 
+pruned.ct <- prune(cv.ct, cp = cv.ct$cptable[which.min(cv.ct$cptable[,"xerror"]),"CP"])
+length(pruned.ct$frame$var[pruned.ct$frame$var == "<leaf>"])
+# prp(pruned.ct, type = 1, extra = 1, split.font = 1, varlen = -20)  
+```
+
+#### Classification tree summary 
+
+The result shows number of review (square root term), host total listings, neighborhood, host response rate and average price are major drivers for a listing's review score under classification tree. They all make practical sense: more review suggests the host has more experience on hosting, so might offer better service; a host who own multiple listings might actually be a real estate manager, who potencially know more about how to manage listings; good neighborhood and high response rate results are not surprising.
+
+### Comparison and summary
+
+#### Model analysis
+
+Overall, the three models reinforce each other. The logistic regression model is heavily influenced by host response rate, host total listings (and its square root term), neighborhood, number of amenities, number of reviews, instant booking and average price. In KNN, significant variables are not directly retrievable. We ran a linear regression to retrieve the significant variables: host response rate, host total listings (and its sqrt term), average price, instant bookable and number of reviews (in sqrt term). In classification tree, the nodes are split by number of review (in sqrt term), host total listings, neighborhood, average price and response rate. Though the three models started from different approaches, the main variables they eventually use for prediction are similar. 
+
+The optimal classification tree has 9 leaves, but our optimal KNN has a k of 47. This means the optimal KNN outputs more specific categories, though KNN's accuracy is not higher than classification tree. 
+
+The classification tree's split criteria are similar to logistic regression, for example, based on the classification tree, higher response rate can improve review score and we see the same pattern in logisic model. Similarily, both models suggest listings in neighborhoods such as Brighton, East Boston, Fenway and Hyde Park have advantages on obtaining higher scores.
+
+#### Confusion matrix analysis
+
+The best logistic regression: accuracy 70.4%; sensitivity 81.9%; specificity 52.5%.
+
+The optimal KNN: accuracy 67.3%; sensitivity 68.1%; specificity 64.9%.
+
+The optimal classification tree: accuracy 72.3%, sensitivity 77.1%; specificity 63.3%.
+
+The optimal classification tree model generates the highest accuracy, which suggests the best overall predicting power. However, one drawback is classification tree's specificity is relatively low, meaning more negative cases are tend to be categorized as postive cases. This can be resolved by rebalancing data, but KNN is better in terms of specificity. Logistic regression's accuracy is great, but relatively its sensitivity and specificity are issues.
+
+To conclude, we believe in this case classification tree is the best model consider its highest accuracy and satisfying sensitivity, specificity and other statstics.
+

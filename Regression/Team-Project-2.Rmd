@@ -1,0 +1,465 @@
+---
+title: "Team Project 2 Multiple Regression"
+author: "BD5"
+date: "Oct 21 2019"
+output:
+  word_document: default
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+## Project Introduction 
+How much should you charge someone to live in your house? Or how much would you pay to live in someone else’s house? Would you pay more or less for a planned vacation or for a spur-of-the-moment getaway?
+
+This project is meant to help customers know average price of the chosen Airbnb house within given information in order to determine whether the price is reasonable. Our orgianial dataset is from Inside Airbnb http://insideairbnb.com/get-the-data.html. 
+
+### Further Data Cleaning
+As we start our regression model, we reviewed our datasets and went several extra data cleaning steps for better regression expression.
+1) Deleted variables such as “Host Name” and “Host ID” since it won’t influence the price, there is no way that host “Bills” can reasonably charge more can host “Johns”.
+2) Turn listed Amenities Text to Amenities Count. There are 50+ different amenities type on Airbnb, however we noticed that actually almost all hosts provide those essential types such as wifi and hot tubs. So we just use the count of different Amenities.
+3) Removed Zipcode instead using “Neighborhood” Neighborhood are more accurate and fit consumer’s behavior better.
+4) Removed some other overlapped meaningless variables and reserve only one such as “30 days avability”,”60 days avability”, and “90 days avability”
+Part 0. Variable Selection
+We ran a regression for all variables and applied caret package to test the importance of variables with a 5-fold cross-validation, here is the result. 
+
+```{r,warning=FALSE, message=FALSE}
+library(Metrics)
+library(caret)
+library(lmtest)
+library(sandwich)
+library(mgcv)
+library(robustbase)
+library(MASS)
+library(car)
+library(plyr)
+library(pastecs)
+library(Hmisc)
+library(psych)
+library(stringr)
+library(varhandle)
+library(tidyverse)
+library(forecast)
+library(leaps)
+library(forecast)
+library(readxl)
+library(GGally)
+library(modelr)
+library(dummies)
+library(viridis)
+
+clean3<- read.csv("/Users/zhoujiawang/Desktop/Brandeis Life/BigData2/ABB Data Raw/Data Visualize/clean_V3.csv", header=TRUE)
+clean3<-na.omit(clean3)
+#str(clean3)
+attach(clean3)
+```
+
+```{r, warning=FALSE, message=FALSE}
+# define the control using cross
+control <- trainControl(method="cv", number=5)
+model <- train(average_price~., data=clean3,method='lm',trControl=control)
+importance <- varImp(model, scale=FALSE)
+# summarize importance
+print(importance)
+plot(importance)
+
+#library(mlbench)
+#library(caret)
+#control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+# run the RFE algorithm
+#x <- clean3[,1:42]
+#y <-clean3[,43]
+#sizes <- c(10,20,30,40,50,60)
+#results <- rfe(x, y, sizes=sizes, rfeControl=control)
+# summarize the results
+#print(results)
+# list the chosen features
+#predictors(results)
+# plot accuracy versus the number of features
+#plot(results, type=c("g", "o"))
+```
+We can see that  Based on our experience on Airbnb rent and our observation on the dataset, number of bathrooms, accommodates(How many people can accommodate), location(Neighborhoods) and Room Types are most influential factors. 
+
+## Part 1: Descriptive Statistics
+### Variable Selection
+We are trying to figure out the factors that influence Boston Airbnb price. Our variables include:
+
+- Host Features(Hosting Year, If Host respond message fast, if Host is “Airbnb Super Host”…)
+- Property Features(Location, Number of rooms, Room type, Number of beds, Amenities…)
+- Service Features(Security Deposit, Cleaning Fee, Extra People Price…)
+- Reviews(Number of Review, Average Review Score, Latest Review time…)
+
+
+
+### Descriptive Statistics for important variables
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(ggExtra)
+#library(hrbrthemes)
+```
+#### Y variable: Average Price
+Firstly, we analyzed our predictor: average_price we can see the distribution of the price skewed leftward, most Airbnb have price range from 50-250 dollars, mean price of all Boston-Area Airbnb is $209.17, but there is also a fat tail at around 500 dollars, those might be whole-rent Luxury apartment/house
+
+Descriptive Statistics:
+
+```{r, warning=FALSE, message=FALSE}
+summary(clean3$average_price)
+```
+
+```{r, warning=FALSE, message=FALSE}
+stat.desc(clean3$average_price)
+```
+
+Density Plot of Average Price
+```{r, warning=FALSE, message=FALSE}
+clean3 %>%
+  ggplot( aes(x=average_price)) +
+  geom_density(fill="#69b3a2", color="#e9ecef", alpha=0.8)+
+  ggtitle("average_price Density Plot")
+```
+
+####box-and-whisker plots for relevant and important variables.
+Then we examined other variables and their relationship with price. At the beginning ,we box-plotted several must-include variables and described their relationship with our price.
+
+#####Bed type and bedroom type
+Most Airbnb provide real bed or airbed given their average price are higher than 125. Airbed, futon and pull-out sofa price is slightly lower bed types do influenced price. Most Airbnb provide entire home/apt for better privacy.  Privacy is valuable, as a result, Entire home/apt also more expensive than Private Room and Shared Room. 
+
+Bed Type
+```{r, warning=FALSE, message=FALSE}
+ggplot(data=clean3, aes(x=bed_type, group=bed_type, fill=bed_type)) +
+  geom_density(alpha=.4)
+clean3 %>%
+  ggplot( aes(x=bed_type, y=average_price, fill=bed_type)) +
+  geom_boxplot() +
+  ggtitle('Bed Types versus price box-and-whisker plot') +
+  xlab("Bed Types")+
+  ylab("room prices")
+```
+
+Room Type
+```{r, warning=FALSE, message=FALSE}
+ggplot(data=clean3, aes(x=room_type, group=room_type, fill=room_type)) +
+  geom_density(alpha=.4)
+clean3 %>%
+  ggplot( aes(x=room_type, y=average_price, fill=room_type)) +
+  geom_boxplot() +
+  ggtitle('room type versus price box-and-whisker plot') +
+  xlab("room type")+
+  ylab("room prices")
+```
+
+#####Bedroom number and number of bed
+Despite the fact that 5-bedroom and 6-bedroom listings’ price have very wide distribution, we can see bedrooms amount pushes up the price. Same as bedroom number, bed number also have a relatively positive relationship with price. We believe there might be strong correlation between these two variables, which we will discuss later.
+
+Bedroom number:
+```{r, warning=FALSE, message=FALSE}
+clean3$bedrooms<-as.factor(clean3$bedrooms)
+clean3 %>%
+  ggplot( aes(x=bedrooms, y=average_price, fill=bedrooms)) +
+  geom_boxplot() +
+  ggtitle('Bedroom numbers versus price box-and-whisker plot') +
+  xlab("number of bedroom")+
+  ylab("room prices")
+clean3$bedrooms<-as.factor(clean3$bedrooms)
+clean3 %>%
+  ggplot( aes(x=bedrooms, y=average_price, fill=bedrooms)) +
+  geom_violin() +
+  ggtitle('Bedroom numbers versus price box-and-whisker plot') +
+  xlab("number of bedroom")+
+  ylab("room prices")
+```
+
+Bed number:
+```{r, warning=FALSE, message=FALSE}
+#bed number
+clean3$beds<-as.factor(clean3$beds)
+clean3 %>%
+  ggplot( aes(x=beds, y=average_price, fill=beds)) +
+  geom_boxplot() +
+  ggtitle('Bed numbers versus price box-and-whisker plot') +
+  xlab("number of bedroom")+
+  ylab("room prices")
+```
+
+#####Safety Issue: host_has_profile_pic & host identity verified
+Seems like safety are not really a big deal for Airbnb pricing, hosts whose profile picture uploaded or identity verified can’t bid on higher price.These two variables need to be discussed since the result from 
+box plot is counter-intutive. We need further t-test to check if their average price are different.
+
+Host Features: host_has_profile_pic
+```{r, warning=FALSE, message=FALSE}
+clean3 %>%
+  ggplot( aes(x=host_has_profile_pic, y=average_price, fill=host_has_profile_pic)) +
+  geom_boxplot() +
+  ggtitle('If Host post picture versus price box-and-whisker plot') +
+  xlab("host_has_profile_pic")+
+  ylab("room prices")
+```
+
+host identity verified
+```{r, warning=FALSE, message=FALSE}
+clean3 %>%
+  ggplot( aes(x=host_identity_verified, y=average_price, fill=host_identity_verified)) +
+  geom_boxplot() +
+  ggtitle('If Host Identity Verified versus price box-and-whisker plot') +
+  xlab("host_identity_verified")+
+  ylab("room prices")
+```
+
+#####Host listing count
+We assume that a hosts with many Airbnb properties are more likely adjust price, from the distribution we can see that actually 50% hosts have less than 4 listings. The price would climb slightly higher when more listings hosted by same person, this situation become especially obvious in the latter 50% hosts with more than 4 listings.
+```{r, warning=FALSE, message=FALSE}
+summary(calculated_host_listings_count)
+stat.desc(calculated_host_listings_count)
+boxplot(calculated_host_listings_count,pch = 19,xlab = "Number of listings")
+p_listing<-clean3%>%
+  filter(calculated_host_listings_count>4)%>%
+  ggplot( aes(x=calculated_host_listings_count, y=average_price)) +
+  geom_point() +
+  geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE)
+ggExtra::ggMarginal(p_listing,type = "histogram")
+```
+
+#####Review_scores_value
+People seems really satisfied about Boston’s Airbnb, overall average review score is 9.26 with only 0.85 std. When we look at the box plot, we can realize those expensive listings tend to have 9+ review. But in fact 9+ reviewed Airbnbs’ price scattered from lowest to highest, and the average price of 10s are even lower than others. Maybe low price relaxed people’s requirement.
+
+```{r, warning=FALSE, message=FALSE}
+library(viridis)
+summary(review_scores_value)
+stat.desc(review_scores_value)
+clean3 %>%
+  ggplot( aes(x=review_scores_value, y=average_price,group=review_scores_value)) +
+  geom_boxplot()+
+  scale_fill_viridis(discrete = TRUE, alpha=0.6, option="A") +
+  ggtitle("Box Plot") +
+  xlab("Review Score")
+# linear trend + confidence interval
+p_review<-clean3%>%
+  ggplot( aes(x=review_scores_value, y=average_price)) +
+  geom_point() +
+  geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE)
+ggExtra::ggMarginal(p_review,type = "histogram")
+```
+
+#####Review Per Month: 
+Every Airbnb listing gets around 2 reviews every month, while the most frequently reviewed Airbnb can get 13+. The frequency of people reviewing Airbnb seems have negative relationship with the price, low price Airbnb get higher review, maybe because low-priced Airbnbs are booked more frequently.
+```{r, warning=FALSE, message=FALSE}
+summary(reviews_per_month)
+stat.desc(reviews_per_month)
+boxplot(reviews_per_month,pch = 19,xlab = "review per month")
+p_reviewfreq<-clean3%>%
+  filter(reviews_per_month>1)%>%
+  ggplot( aes(x=reviews_per_month, y=average_price)) +
+  geom_point() +
+  geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE)
+ggExtra::ggMarginal(p_reviewfreq,type = "histogram")
+```
+
+
+#####Cleanning Fee and Security Deposit
+Despite the fact that many hosts required 0 cleaning fees, the average cleaning fee for a listing is $72, which is slightly overpriced in our view. Cleaning fee goes up with the price, obviously luxury room required better maintenance.
+```{r, warning=FALSE, message=FALSE}
+summary(cleaning_fee)
+stat.desc(cleaning_fee)
+boxplot(cleaning_fee,pch = 19,xlab = "cleaning_fee")
+p_cleanfee<-clean3%>%
+  filter(cleaning_fee>0)%>%
+  ggplot( aes(x=cleaning_fee, y=average_price)) +
+  geom_point() +
+  geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE)
+ggExtra::ggMarginal(p_cleanfee,type = "histogram")
+```
+
+Security Deposit
+```{r, warning=FALSE, message=FALSE}
+summary(security_deposit)
+stat.desc(security_deposit)
+plot(security_deposit, average_price)
+#not strong
+```
+
+#####Host Response Rate Percentage: 
+Seems like host with higher response rate also can not require higher price, their effort on actively marketing their listings makes them undervalued their properties.
+```{r, warning=FALSE, message=FALSE}
+summary(host_response_rate.percentage)
+stat.desc(host_response_rate.percentage)
+p_respon<-clean3%>%
+  ggplot( aes(x=host_response_rate.percentage, y=average_price)) +
+  geom_point() +
+  geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE)
+ggExtra::ggMarginal(p_respon,type = "histogram")
+```
+
+### Variable Selection 
+In the second step, we conduct Backward selection to determine the final model. 
+```{r, warning=FALSE, message=FALSE}
+clean3.t <- as_tibble(clean3)
+
+# partition data
+set.seed(1)  # set seed for reproducing the partition
+train.index <- sample(c(1:nrow(clean3.t)), round(nrow(clean3.t)*0.6,0))
+train.t <- clean3.t[train.index,]
+valid.t <- clean3.t[-train.index,]
+
+# function to get mlm by variable
+createMLM <- function(selected.var){
+        train.t <- clean3.t[train.index,selected.var]
+        valid.t <- clean3.t[-train.index,selected.var]
+        mlm <- lm(average_price~., data=train.t)
+        mlm
+}
+
+selected.var.a <- c(1,3,4,6,8,9,11,12,14,15,17,18,19,20,22,23,27,34,35,36,37,42,43)
+mlm.a <- createMLM(selected.var.a)
+summary(mlm.a) # 64.26
+par(mfrow=c(2,2))
+plot(mlm.a)
+vif(mlm.a)
+```
+
+We first implements Variance Inflation Factor to check correlation among chosen factors and then remove highly correlated variables, whose VIF is larger than 5. Although having VIF at 6.3, we still keep Neighbourhood since it is economically important.  
+```{r, warning=FALSE, message=FALSE}
+# mlm.b: remove correlate variables
+selected.var.b <- selected.var.a[! selected.var.a %in% c(35,36)] # cancellationPolicy, requireGuestPic
+mlm.b <- createMLM(selected.var.b)
+summary(mlm.b) # 63.35
+par(mfrow=c(2,2))
+plot(mlm.b)
+vif(mlm.b)
+# Check correlations between all numeric variables (as scatterplots), distribution and print corrleation coefficient
+ggpairs(train.t[,c(1,3,6,18,19,20,22,23,27,42)], title="correlogram with ggpairs()")
+
+```
+
+After conducting regression under both numeric and categorical variables, we remove insignificant variables, which are bedType, securityDeposit, extraPeople, reviewScoreRating and the following VIF demonstrates relatively low correlation among each variables. And final variables are as follows.
+```{r, warning=FALSE, message=FALSE}
+# mlm.c: remove insignificant variables
+selected.var.c <- selected.var.b[! selected.var.b %in% c(17,19,22,27)]
+# bedType,securityDeposit,extraPeople,reviewScoreRating
+mlm.c <- createMLM(selected.var.c)
+summary(mlm.c) #r2 63.27
+vif(mlm.c)
+```
+
+####Remove Outlier 
+Residuals vs. Fitted Values and Normal Probability Plot are used to remove outliers while identifying the leverage point. We deleted the row that contained the property type of Aparthotel, Barn, Resort, Casa particular (Cuba) since it just shows once and in validation set. 15 outliers are removed and R-Squared increases from 63.27% to 65.9%. We ceased to remove observations since R-Squared has no significant increase and no more outstanding outlier visually. And the adjusted R-Squared of our best model, which is mlm.c5, is 65.37% and corresponding RMSE is 95.7656.   !!!!!!!!这里补valid set
+
+```{r, warning=FALSE, message=FALSE}
+train.t <- clean3.t[train.index,selected.var.c]
+valid.t <- clean3.t[-train.index,selected.var.c]
+
+# just 1 observation for Barn, Resort, and Casa particular (Cuba) property type, all in validation data, unable to predict
+train.t %>%
+  filter(property_type == "Barn")
+valid.t %>%
+  filter(property_type == "Barn")
+clean3.t %>%
+  filter(property_type=="Resort")
+clean3.t %>%
+  filter(property_type=="Casa particular (Cuba)")
+
+#drop these observation in validation data
+valid.t <- subset(valid.t, !(property_type %in% c("Aparthotel","Barn","Resort","Casa particular (Cuba)")))
+
+# mlm.c1 remove c(2337,2425,2479)
+train.t <- train.t[-c(2337,2425,2479),]
+mlm.c1 <- lm(average_price~., data=train.t)
+par(mfrow=c(2,2))
+summary(mlm.c1) #r2 64.7
+plot(mlm.c1)
+```
+
+```{r, warning=FALSE, message=FALSE}
+# mlm.c2 remove c(707,2455,3286)
+train.t <- train.t[-c(707,2455,3286),]
+mlm.c2 <- lm(average_price~., data=train.t)
+par(mfrow=c(2,2))
+summary(mlm.c2) #r2 65.35
+plot(mlm.c2)
+```
+
+```{r, warning=FALSE, message=FALSE}
+# mlm.c3 remove c(377,879,2689)
+train.t <- train.t[-c(377,879,2689),]
+mlm.c3 <- lm(average_price~., data=train.t)
+par(mfrow=c(2,2))
+summary(mlm.c3) #r2 65.73
+plot(mlm.c3)
+```
+
+```{r, warning=FALSE, message=FALSE}
+# mlm.c4 remove c(348,1037,3121)
+train.t <- train.t[-c(348,1037,3121),]
+mlm.c4 <- lm(average_price~., data=train.t)
+par(mfrow=c(2,2))
+summary(mlm.c4) #r2 65.72
+plot(mlm.c4)
+
+```
+
+```{r, warning=FALSE, message=FALSE}
+# mlm.c5 remove c(1754,2032,3654)
+train.t <- train.t[-c(1754,2032,3654),]
+mlm.c5 <- lm(average_price~., data=train.t)
+par(mfrow=c(2,2))
+summary(mlm.c5) #r2 65.9
+plot(mlm.c5)
+```
+
+We also caluated the R-sqaured and RMSE of validation set to check the predictability of the chosen model.The R-sqaured and MSE are 96.
+```{r, warning=FALSE, message=FALSE}
+# rmse in valid
+predictions.v <- predict(mlm.c5,valid.t)
+# Calculate difference between the predicted and the true values: res
+res.v <- valid.t$average_price - predictions.v
+rmse.v <- sqrt(mean(res.v ^ 2))
+print(rmse.v) #96.30
+```
+```{r, warning=FALSE, message=FALSE}
+test.y <- valid.t[,'average_price']
+mean.y <- sum(test.y)/nrow(test.y)
+SS.total <- sum((test.y - mean.y)^2)
+SS.residual <- sum((test.y - predictions.v)^2)
+test.rsq <- 1 - SS.residual/SS.total  
+print(test.rsq) #61.2
+```
+
+###Polynomial and interaction term
+We then added polynomial and interaction terin into our regression. The polynomial term of Numbers of bedrooms, number of amenities, numberof bathrooms, response rate, review per month are considered due to economics sense and the non-linear relationship between average price shown in scatter plots. After running regression, there is no significant effect by adding polynomial of bathrooms, response rate and review per month. The final regession with interaction and polynomial term as as follows. No obvious outliers are shown in the Normal Probability Plot of residual. 
+
+The adjusted R-squared of final model in training set is 68.11% while the RMSE in training set is 88.18 ###,  better than the one without polynominals.
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(1)  # set seed for reproducing the partition
+train.index <- sample(c(1:nrow(clean3.t)), round(nrow(clean3.t)*0.6,0))
+train.t <- clean3.t[train.index,selected.var.c]
+train.t <- train.t[-c(2337,2425,2479,707,2455,3286,377,879,2689,348,1037,3121,1754,2032,3654),]
+valid.t <- clean3.t[-train.index,selected.var.c]
+valid.t <- subset(valid.t, !(property_type %in% c("Aparthotel","Barn","Resort","Casa particular (Cuba)")))
+lmp1 = lm(average_price ~ . + bedrooms^2 + I(Number.of.amenities^0.5) +bedrooms*neighbourhood_cleansed, data = train.t)
+summary(lmp1)
+```
+
+```{r, warning=FALSE, message=FALSE}
+par(mfrow=c(2,2))
+plot(lmp1)
+```
+
+#### RMSE of final model in training set
+```{r, warning=FALSE, message=FALSE}
+rmse.t.p = sqrt(mean((train.t$average_price - lmp1$fitted.values)^2))
+rmse.t.p #90.18
+#rmse in validation data
+```
+
+#### RMSE of final model in valiation set
+```{r, warning=FALSE, message=FALSE}
+prediction.p = predict(lmp1,valid.t)
+res.p.v <- valid.t$average_price - prediction.p
+rmse.p.v <- sqrt(mean(res.p.v ^ 2))
+print(rmse.p.v) #92.89
+```
+
+## Model Interpretation and Reflections 
+
+```{r, warning=FALSE, message=FALSE}
+
+```
