@@ -1,0 +1,501 @@
+---
+title: "Project Assignment 4: Clustering"
+author: "BD5"
+date: "11/14/2019"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Data preperation
+
+```{r message = FALSE, warnings = FALSE}
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(dummies)
+library(class)
+library(corrplot)
+library(ROCR)
+library(tidyverse)
+library(car)
+library(cluster)
+
+setwd("~/Documents/2019 Fall/BD2/HW4")
+#setwd("/Users/zhoujiawang/Desktop/Brandeis Life/BigData2/ABB Data Project/Clustering")
+Data1 <- read.csv('clean_V3.csv', header=TRUE)
+Data1$if_review_score96 <- ifelse(Data1$review_scores_rating>=96,"t","f")
+Data1$sqrt.host_total_listings_count <- sqrt(Data1$host_total_listings_count) 
+Data1$sqrt.accommodates <- sqrt(Data1$accommodates)
+Data1$sqrt.security_deposit <- sqrt(Data1$security_deposit)
+Data1$sqrt.number_of_reviews <- sqrt(Data1$number_of_reviews)
+Data1 <- na.omit(Data1)
+
+selected.var <- c(3,5,8,9,11:15,17:20,34,35,37,43,44:48) # consistant with hw3
+outlier <- c(1242,1479,1555,102,2218,509,2133,3353,5741,3628,5976,4479,4692,965) # outliers from hw3
+data.clean <- Data1[-outlier,selected.var]
+attach(data.clean)
+
+# save the cleaned data for future use
+# write.csv(data.clean,'clean_V4.csv') 
+```
+
+This project continues the third assignment's topic: figuring out the variables that can improve a listing's review score. We start with selecting variables, dropping outliers, as we did in hw3.
+
+### Clustering: hierarchical clustering
+
+#### Further clean data for clustering: data.cluster
+
+All numerical variables are normalized, and categorical variables are converted into several dummy variables, as we did in hw3. 
+
+```{r}
+# normalize numeric variables
+numeric.ind = unlist(lapply(data.clean,is.numeric))
+numeric.nor <- as.data.frame(sapply(data.clean[,numeric.ind], scale))
+data.cluster <- cbind(numeric.nor,data.clean[,!numeric.ind])
+#data.cluster <- dummy.data.frame(data.cluster,names=c('host_identity_verified','neighbourhood_cleansed','property_type', 'room_type','bed_type','instant_bookable','cancellation_policy','require_guest_phone_verification','if_review_score96'),sep="_")
+#write.csv(data.cluster,'cluster.csv')
+#duplicated.var <- c(14,16,41,64,67,72,74,80,82) # remove extra dummies (e.g. keep True column and drop the False column)
+#data.cluster <- data.cluster[,-duplicated.var]
+```
+
+#### Determine the best distance computation method
+
+Since our data includes numerical and categorical variables, Gower’s similarity is the only method we can use.
+
+```{r}
+# compute gower distance
+d.norm <- daisy(data.cluster[,1:21], metric = 'gower')
+```
+
+#### Determine the best cluster linking method
+
+After selected distance calculating method, the next step is to determine the linkage method. Here we tried 6 different methods, and made the decision based on dendrograms and histograms - a clear dendrogram and evenly distributed clusters suggest a good cluster method. It turned out that "Ward.D" is the best, but "complete" also looks relatively acceptable. We kept both methods for further analysis.
+
+```{r}
+# determine the best method
+hc1 <- hclust(d.norm, method = "single")
+plot(hc1, hang = -1, ann = FALSE)
+hc2 <- hclust(d.norm, method = "average")
+plot(hc2, hang = -1, ann = FALSE)
+hc3 <- hclust(d.norm, method = "median")
+plot(hc3, hang = -1, ann = FALSE)
+hc4 <- hclust(d.norm, method = "complete")
+plot(hc4, hang = -1, ann = FALSE)
+hc5 <- hclust(d.norm, method = "centroid")
+plot(hc5, hang = -1, ann = FALSE)
+hc6 <- hclust(d.norm, method = "ward.D")
+plot(hc6, hang = -1, ann = FALSE)
+# visually only ward.D is organized
+
+memb1 <- cutree(hc1, k = 6)
+memb2 <- cutree(hc2, k = 6)
+memb3 <- cutree(hc3, k = 6)
+memb4 <- cutree(hc4, k = 6)
+memb5 <- cutree(hc5, k = 6)
+memb6 <- cutree(hc6, k = 6)
+par(mfrow=c(3,2)) 
+hist(memb1,main="single")
+hist(memb2,main = "average")
+hist(memb3,main = "median")
+hist(memb4,main = "complete")
+hist(memb5,main = "centroid")
+hist(memb6,main = "ward.D")
+# again the histograms confirmed ward.D is the best
+```
+
+#### Determine the optimal k
+
+Next we determined the optimal number of clusters. From the dendrograms we observed k = 3 to 10 are all acceptable, therefore we run a for loop to generate histograms. Again, evenly distributed clusters in a histogram show a good split. k = 7 and 8 are all visually good, so we kept 7 to prevent potential overfitting.  
+
+```{r}
+par(mfrow=c(2,2)) 
+d.norm <- daisy(data.cluster[,1:21], metric = 'gower')
+link.method <- c('ward.D', 'complete')
+for (m in link.method){
+  hc <- hclust(d.norm, method = m)
+  # visually 3-10 are acceptable
+  for (i in c(3:10)) {
+    memb <- cutree(hc, k = i)
+    main.title <- paste(m, ' ', i)
+    hist(memb, main=main.title)
+  }
+}
+
+```
+
+#### Display the best clustering model
+
+link method = ward.D, k = 7 is the optimal. Due to the big dataset, heatmap is actually not so meaningful as it does not show all the data entries and the blocks are too small to look at.
+
+```{r}
+# distance method=manhattan, cluster method=ward.D, k=8 is the optimal: most of the categories are equally distributed
+par(mfrow=c(1,1))
+d.norm <- daisy(data.cluster[,1:21], metric = 'gower')
+hc.optimal <- hclust(d.norm, method = 'ward.D')
+memb.optimal <- cutree(hc.optimal, k=7) 
+#plot(hc.optimal)
+hist(memb.optimal)
+
+# try heatmap, but not very meaningful due to too many listings
+heatmap(as.matrix(data.cluster[,1:13]), Colv = NA, hclustfun = hclust, col=rev(paste("grey",1:99,sep="")))
+# heat map's input has to be numerical data, so I only show 1:13 columns which are numerical
+```
+
+#### Save the results
+
+all commented out for the easiness of reading
+
+```{r}
+# manually save the results to hc6.txt
+#cat(memb.optimal)
+# save results to csv
+#hc.pred <- read.table("hc.txt", quote="\"", comment.char="")
+#hc.pred <- t(hc.pred) # transpose
+#write.csv(hc.pred, 'hierCluster.csv')
+```
+
+### Clustering: KMeans
+
+Start with organizing new data.
+
+```{r}
+# normalize numeric variables
+numeric.ind = unlist(lapply(data.clean,is.numeric))
+numeric.nor <- as.data.frame(sapply(data.clean[,numeric.ind], scale))
+data.cluster <- cbind(numeric.nor,data.clean[,!numeric.ind])
+data.cluster <- dummy.data.frame(data.cluster,names=c('host_identity_verified','neighbourhood_cleansed','property_type', 'room_type','bed_type','instant_bookable','cancellation_policy','require_guest_phone_verification','if_review_score96'),sep="_")
+#write.csv(data.cluster,'cluster.csv')
+duplicated.var <- c(14,16,41,64,67,72,74,80,82) # remove extra dummies (e.g. keep True column and drop the False column)
+data.cluster <- data.cluster[,-duplicated.var]
+```
+
+#### KMeans sample
+
+```{r} 
+set.seed(1)
+#from my side, if dummy variables are included, error reports: "NAs introduced by coercionError in do_one(nmeth) : NA/NaN/Inf in foreign function call (arg 1)"
+km <- kmeans(data.cluster,7,20) # start from k=7, to be consistant with hierclustering
+# centroids
+# km$centers
+dist(km$centers)
+```
+
+#### Determine the best k
+
+Simply run a for loop to calculate WSS. From the graph below we observed that the WSS is improving less rapidly after k=7, therefore we use k=7 as the optimal k.
+
+```{r} 
+#to find the best K
+set.seed(1)
+
+wss <- 0
+
+# For 1 to 15 cluster centers
+for (i in 1:20) {
+  km.out <- kmeans(data.cluster, centers = i, nstart=20)
+  # Save total within sum of squares to wss variable
+  wss[i] <- km.out$tot.withinss
+}
+plot(1:20, wss, type = "b", 
+     xlab = "Number of Clusters", 
+     ylab = "Within groups sum of squares")
+
+#K=7 and it is consistent with hierarchical cluster
+```
+
+#### Plot centroids - all variables
+
+Each line represents a cluster. Note that for clarity, the y limit is set to be -1.
+
+```{r}
+# plot an empty scatter plot. since 14-74 are dummies, the variances are not that big
+plot(c(0), xaxt = 'n', ylab = "", type = "l", xlim = c(0,74), ylim = c(-1, max(km$centers)))
+# label x-axes
+axis(1, at = c(1:74))
+# plot centroids 
+for (i in c(1:7)) {
+  lines(km$centers[i,], lty = i, lwd = 2, 
+        col = switch(i, "black", "red", "green", "purple","dark grey", "orange",'brown'))
+}
+# name clusters
+legend('topright', legend=c(1:7),
+       col=c("black", "red", "green", "purple","dark grey", "orange",'brown'),
+       lty=c(1,5,3,4,2,6,1), cex=0.8)
+```
+
+###Q3 Intrepretation
+
+#### Plot centroids - look closer to 1-13th numerical variables
+
+The 14th to 74th variables are all dummy variables and most of the clusters behave similarly after 13th. Therefore, we focused more on the 1st to 13th numerical variables.
+
+```{r}
+plot(c(0), xaxt = 'n', ylab = "", type = "l", xlim = c(0,13), ylim = c(-1, max(km$centers)))
+# label x-axes
+axis(1, at = c(1:74))
+# plot centroids 
+for (i in c(1:7)) {
+  lines(km$centers[i,], lty = i, lwd = 2, 
+        col = switch(i, "black", "red", "green", "purple","dark grey", "orange",'brown'))
+}
+# name clusters
+legend('topleft', legend=c(1:7),
+       col=c("black", "red", "green", "purple","dark grey", "orange",'brown'),
+       lty=c(1,5,3,4,2,6,1), cex=0.8)
+# print our x label names
+label <- names(data.cluster)[1:13]
+print(label)
+```
+
+#### Plot centroids - look closer to 14-40th numerical variables
+
+```{r}
+plot(c(0), xaxt = 'n', ylab = "", type = "l", xlim = c(14,40), ylim = c(-1, max(km$centers)))
+# label x-axes
+axis(1, at = c(1:74))
+# plot centroids 
+for (i in c(1:7)) {
+  lines(km$centers[i,], lty = i, lwd = 2, 
+        col = switch(i, "black", "red", "green", "purple","dark grey", "orange",'brown'))
+}
+# name clusters
+legend('topleft', legend=c(1:7),
+       col=c("black", "red", "green", "purple","dark grey", "orange",'brown'),
+       lty=c(1,5,3,4,2,6,1), cex=0.8)
+# print our x label names
+label <- names(data.cluster)[14:40]
+print(label)
+```
+
+#### Plot centroids - look closer to 40-60th numerical variables
+
+```{r}
+plot(c(0), xaxt = 'n', ylab = "", type = "l", xlim = c(40,60), ylim = c(-1, max(km$centers)))
+# label x-axes
+axis(1, at = c(1:74))
+# plot centroids 
+for (i in c(1:7)) {
+  lines(km$centers[i,], lty = i, lwd = 2, 
+        col = switch(i, "black", "red", "green", "purple","dark grey", "orange",'brown'))
+}
+# name clusters
+legend('topleft', legend=c(1:7),
+       col=c("black", "red", "green", "purple","dark grey", "orange",'brown'),
+       lty=c(1,5,3,4,2,6,1), cex=0.8)
+# print our x label names
+label <- names(data.cluster)[40:60]
+print(label)
+```
+
+#### Plot centroids - look closer to 60-74th numerical variables
+
+```{r}
+plot(c(0), xaxt = 'n', ylab = "", type = "l", xlim = c(60,74), ylim = c(-1, max(km$centers)))
+# label x-axes
+axis(1, at = c(1:74))
+# plot centroids 
+for (i in c(1:7)) {
+  lines(km$centers[i,], lty = i, lwd = 2, 
+        col = switch(i, "black", "red", "green", "purple","dark grey", "orange",'brown'))
+}
+# name clusters
+legend('topleft', legend=c(1:7),
+       col=c("black", "red", "green", "purple","dark grey", "orange",'brown'),
+       lty=c(1,5,3,4,2,6,1), cex=0.8)
+# print our x label names
+label <- names(data.cluster)[60:74]
+print(label)
+```
+
+#####Interpretation: 
+
+      First, we ranked all clusters according to the average price from low to high which is index #10 showing in the plot above and we have the following ranking:
+
+Average price of Cluster # 1< #6<#4<#3<#5<#7<#2
+
+Based on our observation from the visualization, cluster 1, 6, 4’s average prices are below average versus, cluster 3 is around average, cluster 4’s average house price is about one standard deviation higher than the total average price whereas cluster 7 and cluster 2 have average room/house prices almost 2 standard deviations from the mean price. In this case, we could start with categorizing these clusters into 4 groups by price: Cheap (houses belong to clusters: 1,6,4); economic (cluster 3); high end (cluster 4); and expansive (cluster 2 and 7). Furthermore, to have more specific categories within these four. We divide the index plot into four parts, so that we could have more clear look on characteristics of each cluster.
+
+Cluster 2: 
+      It is not hard to find out the for houses/rooms that belong to cluster 2, they all have high accommodates, bathrooms bedrooms and cleaning fees. In this case, we could infer that houses which belong to cluster one, do not necessarily have the highest value per square feet, and it is expensive because it is very big in size. Categorical wise, cluster 2 contains more property type of houses and fewer apartments than other clusters which make sense since they generally have more rooms. Location wise, it more located in Leather District, cleansed South Boston and south Boston Waterfront. However, in general they have least number of properties that have review score more than 96.
+
+Cluster 7:
+   In contrast to cluster 1, houses from cluster 7 most likely because it’s luxurious and are operated by pretty experienced Airbnb hosts and located in expansive neighborhood of Boston area. From the index 4, 5, and 6 we could see that despite the high prices, these houses/rooms do not have that much bedroom, or bathroom, which indicate high price per square feet. In addition, the cluster also has very high number of total listings, which indicates that the owner of those Airbnb houses/rooms are experienced hosts. Location wise, it contains most properties in Hyde Park and north end, which is a very expansive neighbor nearby Boston downtown. Property type wise, this cluster more lofts and resorts than other clusters and most of the time these are entire houses so guests have more privacy. As the result, this cluster has a highest number of properties with more than 96 review score.
+
+Cluster 5:
+   Houses/rooms from this cluster has one biggest feature which is that the owners of these houses are highly experienced, owns 2 standard deviations higher than average number of listings compare with other owners and have most properties located in downtown. Besides, they have average number of rooms and amenities. However, they are able to charge guests higher prices most likely because of experience and location. In this case, these houses and rooms are able to charge relatively higher prices than houses/rooms that belong to “Cheap” categories. Categorical wise, properties in this cluster tend to be: not able to book instant, have more number of apartments than other clusters and have more number of properties in downtown than other clusters.
+
+Cluster 3:
+    In contrast to cluster5, houses/rooms that belong to cluster 3 have much less experienced owners and in addition, compared with houses with similar number of bedrooms and accommodates, these houses have less bathrooms. As the result, due to less experience and fewer bathrooms, these houses are charged in much lower prices than that of other houses. Categorical wise, it has more Condominium, and relative low possibilities to have review score more than 96.
+
+Cluster 1:
+The average house price within cluster 1 is the lowest among all clusters. In addition, average number amenities are high relative to clusters in the same price range. Categorical wise, more of the properties tend to: be private rooms, instant bookable, have more Hostel and locate more in Drochester.
+
+Cluster 6:
+Cluster 6 has second lowest average prices compare with other low cost “cheap” clusters. In addition, cluster 6 has low Number of amenities but high security deposit. As the result, cluster 6 is low price but not liquidity friendly. Categorical wise, it tend to: have more private room, have flexible cancellation policy and have pretty good reviews.
+
+Cluster 4:
+    This cluster has the highest average prices among total three “cheap” category. However, it has relatively higher average accommodates and bedrooms. Categorical wise, it tends to be: entire apartment or house, Futon bed type and pull out sofa, and have least cancellation_policy_strict_14_with_grace_period. In this case, it’s spacious and economic type of houses and rooms.
+
+To Summarize all our findings, we would like to label all categories as the following:
+
+Cluster 1: Best Value houses: Low price, high number of amenities, low cleaning fee and security deposit
+
+Cluster 2: Spacious high-end houses: more bedrooms, accommodates and bathrooms; high price
+
+Cluster 3: Bathroom shortage average price houses: reasonable price, and feature, but low number of bathrooms.
+
+Cluster 4: Economic friendly spacious houses: relative more spacious than houses belong to “cheap” label.
+
+Cluster 5: Experienced host houses: featured with hosts who have large number of listings with high cleaning fee, high deposit and high price 
+
+Cluster 6: Cheap flexible houses: low price, high deposit, but privacy and flexible cancellation policies.
+
+Cluster 7: Luxurious best View houses: High price, locate in Hyde Park and north end which have good view and location, and run by experienced owners.
+
+#### Save the clustering results
+
+all commented out for the easiness of reading
+
+```{r}
+# manually save the results to kMeans.txt
+#cat(km$cluster)
+
+# save results to csv
+#kmeans.pred <- read.table("kMeans.txt", quote="\"", comment.char="")
+#kmeans.pred <- t(kmeans.pred) # transpose
+#write.csv(kmeans.pred, 'kMeans.csv')
+```
+
+### Start to put back into model
+
+```{r,warning=FALSE, message=FALSE}
+
+#setwd("~/Documents/2019 Fall/BD2/HW4")
+Data1new <- read.csv('clean_V4.csv', header=TRUE)
+Data1new$if_review_score96<-as.factor(Data1new$if_review_score96)
+Data1new$HierCluster<-as.factor(Data1new$HierCluster)
+Data1new$KMeansCluster<-as.factor(Data1new$KMeansCluster)
+Data1new<-Data1new[!Data1new$property_type %in% c("Casa particular (Cuba)","Aparthotel","Barn","Cottage","Resort","Farm stay","Houseboat"),]
+Data1new<-Data1new[!Data1new$bed_type %in% c("Couch"),]
+#delete a special property type Casa(cuba) seems like a outlier
+summary(Data1new$property_type)
+summary(Data1new$bed_type)
+ 
+mu <- Data1new %>% 
+  group_by(if_review_score96) %>%
+  summarise(grp.mean = mean(average_price))
+
+ggplot(Data1new,aes(x=property_type))+geom_bar(aes(fill=if_review_score96))
+Data1new %>%
+  group_by(property_type,if_review_score96) %>%tally() %>%group_by(property_type) %>%
+  mutate(x = n / sum(n)) %>%ggplot() +
+  geom_col(aes(x = property_type,y = x,fill = factor(if_review_score96)), position = "stack")
+
+ggplot(Data1new,aes(x=average_price))+geom_density(aes(fill=if_review_score96,alpha=0.2))+
+  geom_vline(aes(xintercept = grp.mean, color = if_review_score96), data = mu, linetype = "dashed")
+```
+
+Some property types contain small amount of listings. Among the "common" property types, apartments have a lower review_score>96 ratio, bed and breakfast more likely to earn a higher than 96 review score. A fat tail is found at price around 500, high score happens more often at price range from 100 to 200.
+
+```{r}
+set.seed(7)
+Train <- sample(c(1:nrow(Data1new)), round(nrow(Data1new)*0.6,0))
+Logtrain <- Data1new[ Train, ]
+Logtest <- Data1new[ -Train, ]
+```
+
+First, rerun the logistic model with our cluster factors in and detect with the new variable in, can we cast out more unnecessary variables? Will the Clustering variables invalid the original variables?
+
+```{r,warning=FALSE, message=FALSE}
+Logtrain$HierCluster<-as.factor(Logtrain$HierCluster)
+Logtrain$KMeansCluster<-as.factor(Logtrain$KMeansCluster)
+Logtest$HierCluster<-as.factor(Logtest$HierCluster)
+Logtest$KMeansCluster<-as.factor(Logtest$KMeansCluster)
+
+logfit1 <- glm(if_review_score96~., data=Logtrain, family='binomial')
+logfit2 <- glm(if_review_score96~., data=Logtrain[-c(23,24)], family='binomial')
+
+# make predictions
+probabilities1 <- predict(logfit1, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities1 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+
+probabilities2 <- predict(logfit2, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities2 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+```
+
+```{r}
+anova(logfit1,logfit2,test ="Chisq")
+```
+
+Although the fact that our model accuracy improved 0.002 after adding the Clustering variables. Anova Chi-Square test shows a P value around 0.10, which indicates that our New Model and Original Model are not that statistically different. We need to explore this further.
+
+#### Detect variable significance after adding the clustering factors
+
+After summarized our second logistic regression, we decide to drop unsignificant variables such as number of bathrooms, number of bedrooms, bed type, host_identity_verified, room_type, security_deposit, cleaning_fee.
+
+Although it seems our newly added depended variable: the Kmeans and Hierarchical clusterings seem not significant as well, let's leave them in the model.
+
+```{r}
+# summarize the fit
+data.frame(summary(logfit1)$coefficients, odds = exp(coef(logfit1)))
+summary(logfit1)
+```
+
+Now reduce the variables and rerun it again.
+
+```{r}
+logfit3 <- glm(if_review_score96 ~ host_response_rate.percentage + host_total_listings_count +
+                 neighbourhood_cleansed + property_type + accommodates + Number.of.amenities + 
+                 instant_bookable + cancellation_policy + require_guest_phone_verification + average_price+
+                 sqrt.host_total_listings_count + sqrt.accommodates + sqrt.security_deposit +
+                 sqrt.number_of_reviews + HierCluster +KMeansCluster, 
+               data=Logtrain, family='binomial')
+
+probabilities3 <- predict(logfit3, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities3 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+```
+
+To improve model further, detect outliers and delete.
+
+```{r}
+plot(logfit3, which = 4, id.n = 10)
+Logtrain2 <- Logtrain[!(rownames(Logtrain) %in%
+                          c(1280,2374,101,3064,2274,770,3295,4923,4914,2178)),]
+```
+
+After deleting outliers the new model becomes better performed, let's redo the Anova test again, first apply our original Best-Performed Logfit1 model into the outlier-removed new dataset.
+
+```{r}
+logfit1.2 <- glm(if_review_score96~., data=Logtrain2[-c(23,24)], family='binomial')
+logfit3.2 <- glm(if_review_score96 ~ host_response_rate.percentage + host_total_listings_count +
+                 neighbourhood_cleansed + property_type + accommodates + Number.of.amenities + 
+                 instant_bookable + cancellation_policy + average_price + sqrt.host_total_listings_count +
+                 sqrt.accommodates + sqrt.security_deposit + sqrt.number_of_reviews + HierCluster +
+                 KMeansCluster, data=Logtrain2, family='binomial')
+probabilities3.2 <- predict(logfit3.2, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities3.2 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+probabilities1.2 <- predict(logfit1.2, newdata = Logtest, type='response')
+confusionMatrix(as.factor(ifelse(probabilities1.2 > 0.5,"t","f")), as.factor(Logtest$if_review_score96))
+anova(logfit1.2,logfit3.2,test ="Chisq")
+```
+
+Now we rechecked our model comparison, we can easily see that our model accuracy increased from 0.698 to 0.700, still a 0.002 increase. 
+
+The increase of accuracy comes mostly from increase in sensitivity from 0.826 to 0.83. Sensitivity =  The proportion of observed positives that were predicted to be positive. In other words, of all the review scores that were truly lower than 96, what percentage did we find? The increase in Sensitivity means our model becomes better on interpreting the score<96 listings.
+
+Actually, our original model has already been very accurate on predicting the score<96 situations, our original model's sensitivity 0.826 has already been high enough when compared with only 0.49 Specificity.
+
+The result of Anova Chi-Square test finally got P value drop to 0.02 (lower than 0.05). That is to say these two models are statistically different from each other.
+
+```{r}
+# make predictions
+library(ROCR)
+# Compute AUC for predicting Class with the variable CreditHistory.Critical
+perf <- performance(prediction(probabilities3.2,Logtest$if_review_score96), measure = "tpr", x.measure = "fpr")
+plot(perf)
+auc<-performance(prediction(probabilities3.2,Logtest$if_review_score96), measure = "auc")@y.values[[1]]
+auc
+```
